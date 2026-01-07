@@ -1,0 +1,19 @@
+[Unit]
+Description=Notion Personal Agent Daemon
+After=network.target
+
+[Service]
+# User running the agent (change if not root)
+User=root
+# Adjust path to your project directory
+WorkingDirectory=/root/notion-personal-agent
+# Command to run the server (point to your venv python)
+ExecStart=/root/notion-personal-agent/.venv/bin/python src/server.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Ensure PATH includes what you need (like claude CLI if not using full path)
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

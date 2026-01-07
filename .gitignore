@@ -1,0 +1,20 @@
+# Environment Variables
+.env
+
+# Google Credentials
+credentials.json
+token.pickle
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Server socket
+/tmp/notion_agent.sock
