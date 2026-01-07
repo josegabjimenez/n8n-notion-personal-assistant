@@ -113,7 +113,7 @@ def main():
 
                             # Check for Calendar Sync
                             # If checking for TIME updates to sync existing event:
-                            if "dueDateTime" in updates or "name" in updates:
+                            if "dueDateTime" in updates or "dueDate" in updates or "name" in updates:
                                 # Find event ID from context
                                 task_to_edit = next((t for t in tasks if t["id"] == task_id), None)
                                 if task_to_edit and task_to_edit.get("googleEventId"):
@@ -122,8 +122,16 @@ def main():
                                     calendar_updates = {}
                                     if "dueDateTime" in updates:
                                         calendar_updates["dueDate"] = updates["dueDateTime"]
+                                    elif "dueDate" in updates:
+                                        calendar_updates["dueDate"] = updates["dueDate"]
                                     if "name" in updates:
                                         calendar_updates["name"] = updates["name"]
+                                    
+                                    if calendar_updates:
+                                        calendar.update_event(
+                                            task_to_edit["googleEventId"], 
+                                            calendar_updates
+                                        )
                                     
                             
                             elif updates.get("done"):
