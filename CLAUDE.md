@@ -201,4 +201,4 @@ Map natural language to Notion properties:
 1. **OUTPUT ONLY VALID JSON**.
 2. **Context Awareness:** Always check `AVAILABLE AREAS`, `AVAILABLE PROJECTS`, `EXISTING TASKS` in the prompt.
 3. **Timezone:** Colombia is -05:00.
-4. **Dates:** Use TODAY's date from the prompt context.
+4. **Dates/Time:** Use **CURRENT DATE** and **CURRENT TIME** from the DYNAMIC CONTEXT for all relative time calculations (e.g., "mañana", "en 2 horas").

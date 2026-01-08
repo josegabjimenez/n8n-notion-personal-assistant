@@ -18,9 +18,21 @@ class AIHandler:
         system_prompt = self._load_system_prompt()
         
         # Build Context String
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d %A")
+        # Get current time in Colombia (UTC-5)
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("America/Bogota")
+        except ImportError:
+            # Fallback for systems without zoneinfo/tzdata (UTC-5)
+            tz = datetime.timezone(datetime.timedelta(hours=-5))
+
+        now = datetime.datetime.now(tz)
+        today_str = now.strftime("%Y-%m-%d %A")
+        time_str = now.strftime("%H:%M:%S")
+
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
-        context_str += f"TODAY'S DATE: {today_str}\n"
+        context_str += f"CURRENT DATE: {today_str}\n"
+        context_str += f"CURRENT TIME: {time_str} (Timezone: America/Bogota)\n"
         
         context_str += "\nAVAILABLE AREAS:\n"
         for area in context.get("areas", []):
