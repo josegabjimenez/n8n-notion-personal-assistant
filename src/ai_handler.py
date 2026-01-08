@@ -3,36 +3,67 @@ import json
 import subprocess
 import shlex
 import datetime
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 class AIHandler:
     def __init__(self):
         self.cli_command = os.getenv("AI_CLI_COMMAND", "claude")
-        self.claude_md_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "CLAUDE.md")
+        self.prompts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
-    def _load_system_prompt(self) -> str:
-        with open(self.claude_md_path, "r") as f:
+    def _load_prompt(self, prompt_name: str) -> str:
+        """Load a prompt file from the prompts directory."""
+        prompt_path = os.path.join(self.prompts_dir, prompt_name)
+        with open(prompt_path, "r") as f:
             return f.read()
 
-    def classify_intent(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        system_prompt = self._load_system_prompt()
-        
-        # Build Context String
-        # Get current time in Colombia (UTC-5)
+    def _get_time_context(self) -> str:
+        """Get current time context for Colombia timezone."""
         try:
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("America/Bogota")
         except ImportError:
-            # Fallback for systems without zoneinfo/tzdata (UTC-5)
             tz = datetime.timezone(datetime.timedelta(hours=-5))
 
         now = datetime.datetime.now(tz)
         today_str = now.strftime("%Y-%m-%d %A")
         time_str = now.strftime("%H:%M:%S")
+        
+        return f"CURRENT DATE: {today_str}\nCURRENT TIME: {time_str} (Timezone: America/Bogota)\n"
 
+    def _call_ai(self, full_prompt: str) -> Dict[str, Any]:
+        """Execute AI CLI and parse JSON response."""
+        cmd = shlex.split(self.cli_command)
+        cmd.append(full_prompt)
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            output = result.stdout.strip()
+            
+            # Extract JSON from markdown code blocks if present
+            if "```json" in output:
+                output = output.split("```json")[1].split("```")[0].strip()
+            elif "```" in output:
+                output = output.split("```")[1].strip()
+                
+            return json.loads(output)
+            
+        except subprocess.CalledProcessError as e:
+            return {
+                "intent": "query",
+                "response": f"Lo siento, hubo un error al procesar tu solicitud. Error: {e.stderr}",
+            }
+        except json.JSONDecodeError:
+            return {
+                "intent": "query",
+                "response": "Lo siento, la respuesta de la IA no fue válida. " + output[:100],
+            }
+
+    def handle_tasks(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle task-related queries using TASKS_AGENT prompt."""
+        system_prompt = self._load_prompt("TASKS_AGENT.md")
+        
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
-        context_str += f"CURRENT DATE: {today_str}\n"
-        context_str += f"CURRENT TIME: {time_str} (Timezone: America/Bogota)\n"
+        context_str += self._get_time_context()
         
         context_str += "\nAVAILABLE AREAS:\n"
         for area in context.get("areas", []):
@@ -46,15 +77,11 @@ class AIHandler:
         for task in context.get("tasks", []):
             task_line = f"- {task['name']} (ID: {task['id']})"
             
-            # Add due date if available
             if task.get('dueDate'):
                 task_line += f" | Due: {task['dueDate']}"
-            
-            # Add priority if available
             if task.get('priority'):
                 task_line += f" | Priority: {task['priority']}"
             
-            # Add flags
             flags = []
             if task.get('urgent'):
                 flags.append("Urgent")
@@ -66,42 +93,56 @@ class AIHandler:
             context_str += task_line + "\n"
 
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
+        return self._call_ai(full_prompt)
 
-        # Execute External CLI
-        # We assume the CLI accepts the prompt as the last argument or via some flag.
-        # User specified "AI_CLI_COMMAND".
-        # If using `claude` CLI, usually it's `claude "prompt"`.
-        # If using `gh model`, it might be `gh model prompt "prompt"`.
-        # We'll try to append the prompt as an argument.
+    def handle_contacts(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle contact-related queries using CONTACTS_AGENT prompt."""
+        system_prompt = self._load_prompt("CONTACTS_AGENT.md")
         
-        cmd = shlex.split(self.cli_command)
-        cmd.append(full_prompt)
+        context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
+        context_str += self._get_time_context()
         
-        try:
-            # Capture stdout
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            output = result.stdout.strip()
+        context_str += "\nCONTACTS:\n"
+        for contact in context.get("contacts", []):
+            contact_line = f"- {contact['name']} (ID: {contact['id']})"
             
-            # Simple attempt to find JSON if wrapped in markdown code blocks
-            if "```json" in output:
-                output = output.split("```json")[1].split("```")[0].strip()
-            elif "```" in output:
-                output = output.split("```")[1].strip()
-                
-            return json.loads(output)
+            if contact.get('groups'):
+                contact_line += f" | Group: {contact['groups']}"
+            if contact.get('company'):
+                contact_line += f" | Company: {contact['company']}"
+            if contact.get('email'):
+                contact_line += f" | Email: {contact['email']}"
+            if contact.get('birthday'):
+                contact_line += f" | Birthday: {contact['birthday']}"
+            if contact.get('age') is not None:
+                contact_line += f" | Age: {contact['age']}"
+            if contact.get('daysUntilBirthday') is not None:
+                contact_line += f" | Days until birthday: {contact['daysUntilBirthday']}"
+            if contact.get('notes'):
+                contact_line += f" | Notes: {contact['notes']}"
+            if contact.get('favorite'):
+                contact_line += " | ⭐ Favorite"
+            if contact.get('contactDue'):
+                contact_line += f" | Status: {contact['contactDue']}"
+            if contact.get('pageContent'):
+                contact_line += f" | Page Content: {contact['pageContent']}"
             
-        except subprocess.CalledProcessError as e:
-            return {
-                "intent": "query",
-                "response": f"Lo siento, hubo un error al procesar tu solicitud con la IA. Error: {e.stderr}",
-                "task": None
-            }
-        except json.JSONDecodeError:
-            # Fallback if AI didn't return valid JSON
-            # We might want to just return the raw text as a query response if it looks like English/Spanish
-            # But strictly following the schema is better.
-            return {
-                "intent": "query",
-                "response": "Lo siento, la respuesta de la IA no fue un formato válido. " + output[:100],
-                "task": None
-            }
+            context_str += contact_line + "\n"
+
+        full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
+        return self._call_ai(full_prompt)
+
+    def handle_general(self, query: str) -> Dict[str, Any]:
+        """Handle general conversation using GENERAL_AGENT prompt."""
+        system_prompt = self._load_prompt("GENERAL_AGENT.md")
+        
+        context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
+        context_str += self._get_time_context()
+
+        full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
+        return self._call_ai(full_prompt)
+
+    # Legacy method for backwards compatibility (not used anymore but kept for safety)
+    def classify_intent(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Legacy method - delegates to handle_tasks for backwards compatibility."""
+        return self.handle_tasks(query, context)
