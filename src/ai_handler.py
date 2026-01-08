@@ -44,7 +44,26 @@ class AIHandler:
             
         context_str += "\nEXISTING TASKS (Recent/Active):\n"
         for task in context.get("tasks", []):
-            context_str += f"- {task['name']} (ID: {task['id']})\n"
+            task_line = f"- {task['name']} (ID: {task['id']})"
+            
+            # Add due date if available
+            if task.get('dueDate'):
+                task_line += f" | Due: {task['dueDate']}"
+            
+            # Add priority if available
+            if task.get('priority'):
+                task_line += f" | Priority: {task['priority']}"
+            
+            # Add flags
+            flags = []
+            if task.get('urgent'):
+                flags.append("Urgent")
+            if task.get('important'):
+                flags.append("Important")
+            if flags:
+                task_line += f" | Flags: {', '.join(flags)}"
+            
+            context_str += task_line + "\n"
 
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
 

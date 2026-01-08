@@ -94,11 +94,27 @@ class NotionService:
             event_id_parts = props.get("Google Event ID", {}).get("rich_text", [])
             google_event_id = event_id_parts[0]["text"]["content"] if event_id_parts else None
 
+            # Extract due date
+            due_date_obj = props.get("Due date", {}).get("date")
+            due_date = due_date_obj.get("start") if due_date_obj else None
+            
+            # Extract priority
+            priority_obj = props.get("Priority", {}).get("select")
+            priority = priority_obj.get("name") if priority_obj else None
+            
+            # Extract urgent and important flags
+            urgent = props.get("Urgent", {}).get("checkbox", False)
+            important = props.get("Important", {}).get("checkbox", False)
+
             tasks.append({
                 "id": page["id"],
                 "name": name,
                 "url": page["url"],
-                "googleEventId": google_event_id
+                "googleEventId": google_event_id,
+                "dueDate": due_date,
+                "priority": priority,
+                "urgent": urgent,
+                "important": important
             })
         return tasks
 
