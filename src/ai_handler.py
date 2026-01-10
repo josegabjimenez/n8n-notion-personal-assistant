@@ -135,12 +135,65 @@ class AIHandler:
     def handle_general(self, query: str) -> Dict[str, Any]:
         """Handle general conversation using GENERAL_AGENT prompt."""
         system_prompt = self._load_prompt("GENERAL_AGENT.md")
-        
+
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
         context_str += self._get_time_context()
 
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
         return self._call_ai(full_prompt)
+
+    def handle_status(self, query: str, task_store) -> Dict[str, Any]:
+        """Handle status queries using STATUS_AGENT prompt with smart matching."""
+        pending = task_store.get_pending_tasks()
+        completed = task_store.get_recent_completed()
+
+        # Fast path: No tasks at all
+        if not pending and not completed:
+            return {
+                "intent": "status",
+                "response": "No tengo tareas procesando. ¿En qué te puedo ayudar?"
+            }
+
+        # Fast path: Only pending tasks, no completed
+        if pending and not completed:
+            # Describe what's still processing
+            task_descriptions = [t.query[:50] for t in pending[:3]]
+            if len(pending) == 1:
+                return {
+                    "intent": "status",
+                    "response": "Todavía estoy trabajando en eso. Dame unos segundos más."
+                }
+            else:
+                return {
+                    "intent": "status",
+                    "response": f"Tengo {len(pending)} tareas procesando. Dame unos segundos más."
+                }
+
+        # Use AI to match query to the right completed task
+        system_prompt = self._load_prompt("STATUS_AGENT.md")
+
+        context_str = "\n\n--- DYNAMIC CONTEXT ---\n"
+        context_str += self._get_time_context()
+
+        context_str += "\nPENDING TASKS (still processing):\n"
+        for task in pending:
+            context_str += f"- ID: {task.id} | Query: \"{task.query}\"\n"
+
+        context_str += "\nCOMPLETED TASKS (ready to return):\n"
+        for task in completed:
+            result_preview = (task.result[:100] + "...") if task.result and len(task.result) > 100 else task.result
+            error_info = f" | Error: {task.error}" if task.error else ""
+            context_str += f"- ID: {task.id} | Query: \"{task.query}\" | Result: \"{result_preview}\"{error_info}\n"
+
+        full_prompt = f"{system_prompt}\n{context_str}\n\nUSER STATUS QUERY: \"{query}\""
+        result = self._call_ai(full_prompt)
+
+        # Mark the matched task as consumed
+        matched_task_id = result.get("matched_task_id")
+        if matched_task_id:
+            task_store.mark_consumed(matched_task_id)
+
+        return result
 
     # Legacy method for backwards compatibility (not used anymore but kept for safety)
     def classify_intent(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:

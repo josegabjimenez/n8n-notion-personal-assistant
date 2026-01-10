@@ -23,7 +23,7 @@ User Query → Intent Router → Domain-Specific Agent → Response
 ### Components
 
 1. **Intent Router** (`prompts/ROUTER.md`)
-   - Lightweight classifier that routes queries to: `tasks`, `contacts`, or `general`
+   - Lightweight classifier that routes queries to: `tasks`, `contacts`, `status`, or `general`
    - Fast, cheap, single-word response
 
 2. **Tasks Agent** (`prompts/TASKS_AGENT.md`)
@@ -39,6 +39,45 @@ User Query → Intent Router → Domain-Specific Agent → Response
 4. **General Agent** (`prompts/GENERAL_AGENT.md`)
    - Greetings and chitchat
    - Capability explanations
+
+5. **Status Agent** (`prompts/STATUS_AGENT.md`)
+   - Handles queries about background task results
+   - AI-based smart matching for concurrent tasks
+   - Returns results and marks tasks as consumed
+
+---
+
+## Async Response Architecture (Alexa Integration)
+
+### Problem Solved
+Alexa times out after ~8 seconds, but some operations (task creation with calendar sync) take 10-17 seconds.
+
+### Solution: Deadline-Based Response Pattern
+1. Requests are processed in background threads
+2. Server waits up to 6 seconds for completion (configurable via `DEADLINE_SECONDS`)
+3. If completed in time: returns actual response
+4. If deadline exceeded: returns "Procesando, pregúntame qué pasó" and continues in background
+
+### Status Query Flow
+- User asks "¿Qué pasó?" to retrieve background task results
+- AI-based smart matching picks the correct task from pending/completed list
+- Once a result is returned, the task is marked "consumed" (won't appear again)
+
+### Key Async Files
+- `src/task_store.py` - Thread-safe in-memory store for background tasks
+- `src/background_processor.py` - Handles deadline-based processing
+- `prompts/STATUS_AGENT.md` - AI prompt for smart task matching
+
+### Status Intent (Router)
+The "status" domain handles queries about pending/completed tasks:
+- "¿Qué pasó?" → status
+- "¿Terminaste?" → status
+- "¿Qué pasó con el contacto?" → status (with context for smart matching)
+
+### Threading Model
+- Each socket connection handled in a daemon thread
+- Background processor uses `threading.Event` for deadline signaling
+- TaskStore uses `threading.Lock` for thread-safe access
 
 ---
 
@@ -66,6 +105,7 @@ NOTION_PROJECTS_DATABASE_ID=<projects db id>
 NOTION_CONTACTS_DATABASE_ID=<contacts db id>
 AI_CLI_COMMAND=claude -p --model claude-haiku-4-5-20251001
 SOCKET_PATH=/tmp/notion_agent.sock
+DEADLINE_SECONDS=6.0  # Optional: deadline for Alexa responses (default: 6.0)
 ```
 
 ---
@@ -84,16 +124,19 @@ SOCKET_PATH=/tmp/notion_agent.sock
 ```
 notion-personal-agent/
 ├── src/
-│   ├── server.py          # Main socket server
-│   ├── client.py          # CLI client
-│   ├── intent_router.py   # Query domain classifier
-│   ├── ai_handler.py      # AI handlers per domain
-│   ├── notion_service.py  # Notion API wrapper
-│   └── calendar_service.py # Google Calendar integration
+│   ├── server.py              # Main socket server (deadline-based flow)
+│   ├── client.py              # CLI client
+│   ├── intent_router.py       # Query domain classifier
+│   ├── ai_handler.py          # AI handlers per domain
+│   ├── notion_service.py      # Notion API wrapper
+│   ├── calendar_service.py    # Google Calendar integration
+│   ├── task_store.py          # Thread-safe background task store
+│   └── background_processor.py # Deadline-based async processing
 ├── prompts/
-│   ├── ROUTER.md          # Intent classification
-│   ├── TASKS_AGENT.md     # Task management
-│   ├── CONTACTS_AGENT.md  # Contact queries
-│   └── GENERAL_AGENT.md   # Chitchat
-└── CLAUDE.md              # This file
+│   ├── ROUTER.md              # Intent classification
+│   ├── TASKS_AGENT.md         # Task management
+│   ├── CONTACTS_AGENT.md      # Contact queries
+│   ├── GENERAL_AGENT.md       # Chitchat
+│   └── STATUS_AGENT.md        # Background task status queries
+└── CLAUDE.md                  # This file
 ```

@@ -3,11 +3,14 @@ import socket
 import sys
 import json
 import logging
+import threading
 from dotenv import load_dotenv
 from notion_service import NotionService
 from ai_handler import AIHandler
 from calendar_service import CalendarService
 from intent_router import IntentRouter
+from task_store import TaskStore
+from background_processor import BackgroundProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -16,16 +19,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NotionAgent")
 
+# Status query keywords for fast detection (no AI call needed)
+STATUS_KEYWORDS = [
+    "qué pasó", "que paso", "terminaste", "resultado",
+    "qué hiciste", "que hiciste", "cuéntame", "cuentame",
+    "ya quedó", "ya quedo", "listo"
+]
+
+
+def is_status_query(query: str) -> bool:
+    """Fast check if this is a status query."""
+    query_lower = query.lower()
+    return any(kw in query_lower for kw in STATUS_KEYWORDS)
+
+
+def handle_connection(conn, ai, task_store, bg_processor, deadline_seconds=6.0):
+    """Handle a single connection with deadline-based processing."""
+    try:
+        # Read Query
+        data = conn.recv(4096)
+        if not data:
+            return
+
+        query = data.decode("utf-8").strip()
+        logger.info(f"Received query: {query}")
+
+        # Fast path: Status query (no background processing needed)
+        if is_status_query(query):
+            logger.info("Detected status query - fast path")
+            result = ai.handle_status(query, task_store)
+            response_text = result.get("response", "No tengo información disponible.")
+            conn.sendall(response_text.encode("utf-8"))
+            return
+
+        # Normal path: Deadline-based processing
+        logger.info(f"Starting deadline-based processing (deadline={deadline_seconds}s)")
+        result, completed_in_time = bg_processor.process_with_deadline(query, deadline_seconds)
+
+        if completed_in_time:
+            # Task completed within deadline - return actual response
+            response_text = result.get("response", "Procesado.")
+            logger.info(f"Completed in time: {response_text[:50]}...")
+        else:
+            # Deadline exceeded - return acknowledgment, continue in background
+            response_text = "Procesando tu solicitud, pregúntame en unos segundos qué pasó."
+            logger.info("Deadline exceeded - returning acknowledgment")
+
+        conn.sendall(response_text.encode("utf-8"))
+
+    except Exception as e:
+        logger.error(f"Error handling connection: {e}")
+        conn.sendall(b"Error interno del servidor.")
+    finally:
+        conn.close()
+
+
 def main():
     # Load Environment
     load_dotenv()
     socket_path = os.getenv("SOCKET_PATH", "/tmp/notion_agent.sock")
+    deadline_seconds = float(os.getenv("DEADLINE_SECONDS", "6.0"))
 
     # Initialize Services
     try:
         logger.info("Initializing Notion Service...")
         notion = NotionService()
-        
+
         logger.info("Initializing AI Handler...")
         ai = AIHandler()
 
@@ -34,13 +93,27 @@ def main():
 
         logger.info("Initializing Calendar Service...")
         calendar = CalendarService()
-        
+
+        logger.info("Initializing Task Store...")
+        task_store = TaskStore(max_tasks=50, ttl_seconds=300)
+
         # Cache Static Context (Areas/Projects)
         logger.info("Fetching static context (Areas/Projects)...")
         areas = notion.get_areas()
         projects = notion.get_projects()
         logger.info(f"Loaded {len(areas)} areas and {len(projects)} projects.")
-        
+
+        logger.info("Initializing Background Processor...")
+        bg_processor = BackgroundProcessor(
+            notion_service=notion,
+            ai_handler=ai,
+            calendar_service=calendar,
+            intent_router=router,
+            task_store=task_store,
+            areas=areas,
+            projects=projects
+        )
+
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         sys.exit(1)
@@ -51,176 +124,32 @@ def main():
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(socket_path)
-    server.listen(1)
-    
+    server.listen(5)  # Increased backlog for concurrent requests
+
     # Ensure socket is accessible
     os.chmod(socket_path, 0o777)
-    
+
     logger.info(f"Listening on {socket_path}...")
+    logger.info(f"Deadline for responses: {deadline_seconds} seconds")
 
     try:
         while True:
             conn, _ = server.accept()
-            try:
-                # Read Query
-                data = conn.recv(4096)
-                if not data:
-                    break
-                
-                query = data.decode("utf-8").strip()
-                logger.info(f"Received query: {query}")
-                
-                # Step 1: Route the query to the appropriate domain
-                domain = router.classify(query)
-                logger.info(f"Routed to domain: {domain}")
-                
-                # Step 2: Fetch domain-specific context and get response
-                result = None
-                
-                if domain == "tasks":
-                    # Fetch active tasks for context
-                    tasks = notion.get_active_tasks()
-                    context = {
-                        "areas": areas,
-                        "projects": projects,
-                        "tasks": tasks
-                    }
-                    result = ai.handle_tasks(query, context)
-                    
-                elif domain == "contacts":
-                    # Fetch contacts for context
-                    contacts = notion.get_contacts()
-                    
-                    # Enrich context with page content for relevant contacts
-                    # (Favorites, Family, or those matching keywords in query)
-                    query_low = query.lower()
-                    for contact in contacts:
-                        is_relevant = (
-                            contact.get("favorite") or 
-                            contact.get("groups") == "Family" or
-                            any(word in contact["name"].lower() for word in query_low.split() if len(word) > 3) or
-                            (contact.get("notes") and any(word in contact["notes"].lower() for word in query_low.split() if len(word) > 3))
-                        )
-                        
-                        if is_relevant:
-                            logger.info(f"Fetching page content for relevant contact: {contact['name']}")
-                            contact["pageContent"] = notion.get_page_content(contact["id"])
+            # Handle each connection in a separate thread for concurrency
+            thread = threading.Thread(
+                target=handle_connection,
+                args=(conn, ai, task_store, bg_processor, deadline_seconds),
+                daemon=True
+            )
+            thread.start()
 
-                    context = {"contacts": contacts}
-                    result = ai.handle_contacts(query, context)
-                    
-                else:  # general
-                    result = ai.handle_general(query)
-                
-                intent = result.get("intent")
-                logger.info(f"Agent intent: {intent}")
-                
-                response_text = result.get("response", "Error processing request.")
-                
-                # Step 3: Execute Actions
-                try:
-                    if domain == "tasks":
-                        if intent == "create":
-                            task_data = result.get("task")
-                            if task_data:
-                                created_page = notion.add_task(task_data)
-                                logger.info("Task created successfully.")
-
-                                # Check for Calendar Sync
-                                if task_data.get("createCalendarEvent") and task_data.get("dueDateTime"):
-                                    logger.info("Creating Google Calendar Event...")
-                                    event_id = calendar.create_event(
-                                        summary=task_data["name"],
-                                        start_time=task_data["dueDateTime"]
-                                    )
-                                    
-                                    if event_id:
-                                        # Update Notion with Event ID
-                                        notion.update_task(created_page["id"], {"googleEventId": event_id})
-                                        logger.info(f"Synced with Calendar. Event ID: {event_id}")
-                                
-                        elif intent == "edit":
-                            task_id = result.get("id")
-                            updates = result.get("updates")
-                            if task_id and updates:
-                                # Need to fetch tasks again for calendar sync check
-                                tasks = notion.get_active_tasks()
-                                notion.update_task(task_id, updates)
-                                logger.info(f"Task {task_id} updated.")
-
-                                # Check for Calendar Sync
-                                if "dueDateTime" in updates or "dueDate" in updates or "name" in updates:
-                                    task_to_edit = next((t for t in tasks if t["id"] == task_id), None)
-                                    if task_to_edit and task_to_edit.get("googleEventId"):
-                                        logger.info(f"Updating Google Calendar Event {task_to_edit['googleEventId']}...")
-                                        
-                                        calendar_updates = {}
-                                        if "dueDateTime" in updates:
-                                            calendar_updates["dueDate"] = updates["dueDateTime"]
-                                        elif "dueDate" in updates:
-                                            calendar_updates["dueDate"] = updates["dueDate"]
-                                        if "name" in updates:
-                                            calendar_updates["name"] = updates["name"]
-                                        
-                                        if calendar_updates:
-                                            calendar.update_event(
-                                                task_to_edit["googleEventId"], 
-                                                calendar_updates
-                                            )
-                                        
-                                elif updates.get("done"):
-                                    task_to_edit = next((t for t in tasks if t["id"] == task_id), None)
-                                    if task_to_edit and task_to_edit.get("googleEventId"):
-                                         logger.info(f"Removing Google Calendar Event {task_to_edit['googleEventId']} for completed task...")
-                                         if calendar.delete_event(task_to_edit["googleEventId"]):
-                                              notion.update_task(task_id, {"googleEventId": ""})
-                                              logger.info("Event removed.")
-                                
-                        elif intent == "delete":
-                            task_id = result.get("id")
-                            if task_id:
-                                notion.archive_task(task_id)
-                                logger.info(f"Task {task_id} archived.")
-
-                    elif domain == "contacts":
-                        if intent == "create":
-                            contact_data = result.get("contact")
-                            if contact_data:
-                                notion.add_contact(contact_data)
-                                logger.info("Contact created successfully.")
-                        
-                        elif intent == "edit":
-                            contact_id = result.get("id")
-                            updates = result.get("updates")
-                            if contact_id and updates:
-                                notion.update_contact(contact_id, updates)
-                                logger.info(f"Contact {contact_id} updated.")
-                        
-                        elif intent == "delete":
-                            contact_id = result.get("id")
-                            if contact_id:
-                                notion.archive_contact(contact_id)
-                                logger.info(f"Contact {contact_id} archived.")
-                                
-                except Exception as e:
-                    logger.error(f"Error executing Notion action: {e}")
-                    response_text = f"Entendido, pero hubo un error ejecutando la acción en Notion: {str(e)}"
-
-                # Send Response
-                conn.sendall(response_text.encode("utf-8"))
-                
-            except Exception as e:
-                logger.error(f"Error handling connection: {e}")
-                conn.sendall(b"Error interno del servidor.")
-            finally:
-                conn.close()
-                
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
         server.close()
         if os.path.exists(socket_path):
             os.remove(socket_path)
+
 
 if __name__ == "__main__":
     main()
