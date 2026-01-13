@@ -1,13 +1,14 @@
 import os
 import json
-import subprocess
-import shlex
 import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from ai_client import AIClient
+
 
 class AIHandler:
-    def __init__(self):
-        self.cli_command = os.getenv("AI_CLI_COMMAND", "claude")
+    def __init__(self, ai_client: Optional[AIClient] = None):
+        self.ai_client = ai_client or AIClient()
         self.prompts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
     def _load_prompt(self, prompt_name: str) -> str:
@@ -31,31 +32,21 @@ class AIHandler:
         return f"CURRENT DATE: {today_str}\nCURRENT TIME: {time_str} (Timezone: America/Bogota)\n"
 
     def _call_ai(self, full_prompt: str) -> Dict[str, Any]:
-        """Execute AI CLI and parse JSON response."""
-        cmd = shlex.split(self.cli_command)
-        cmd.append(full_prompt)
-        
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            output = result.stdout.strip()
-            
-            # Extract JSON from markdown code blocks if present
-            if "```json" in output:
-                output = output.split("```json")[1].split("```")[0].strip()
-            elif "```" in output:
-                output = output.split("```")[1].strip()
-                
-            return json.loads(output)
-            
-        except subprocess.CalledProcessError as e:
+        """Execute AI call via AIClient and parse JSON response."""
+        response = self.ai_client.call(full_prompt, expect_json=True)
+
+        if not response.success:
             return {
                 "intent": "query",
-                "response": f"Lo siento, hubo un error al procesar tu solicitud. Error: {e.stderr}",
+                "response": f"Lo siento, hubo un error al procesar tu solicitud: {response.error}",
             }
+
+        try:
+            return json.loads(response.output)
         except json.JSONDecodeError:
             return {
                 "intent": "query",
-                "response": "Lo siento, la respuesta de la IA no fue válida. " + output[:100],
+                "response": "Lo siento, la respuesta de la IA no fue válida.",
             }
 
     def handle_tasks(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,9 +1,9 @@
 import os
 import re
-import subprocess
-import shlex
 import logging
 from typing import Optional
+
+from ai_client import AIClient
 
 logger = logging.getLogger("IntentRouter")
 
@@ -81,8 +81,8 @@ class IntentRouter:
         r"dime\s+(?:sobre|de)\s+(?:mi[s]?\s+)?(?:amigo|familia|contacto)",
     ]
 
-    def __init__(self):
-        self.cli_command = os.getenv("AI_CLI_COMMAND", "claude")
+    def __init__(self, ai_client: Optional[AIClient] = None):
+        self.ai_client = ai_client or AIClient()
         self.router_prompt_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "prompts",
@@ -160,22 +160,6 @@ class IntentRouter:
         router_prompt = self._load_router_prompt()
         full_prompt = f"{router_prompt}\n\nUSER INPUT: \"{query}\"\n\nRespond with ONLY the domain name (tasks, contacts, status, or general):"
 
-        cmd = shlex.split(self.cli_command)
-        cmd.append(full_prompt)
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            output = result.stdout.strip().lower()
-
-            # Clean up response - extract just the domain word
-            for domain in ["tasks", "contacts", "status", "general"]:
-                if domain in output:
-                    logger.info(f"AI classification: {domain}")
-                    return domain
-
-            # Default to general if unclear
-            return "general"
-
-        except subprocess.CalledProcessError:
-            # On error, default to general
-            return "general"
+        domain = self.ai_client.call_for_classification(full_prompt)
+        logger.info(f"AI classification: {domain}")
+        return domain
