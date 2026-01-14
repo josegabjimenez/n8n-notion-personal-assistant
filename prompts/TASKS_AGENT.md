@@ -135,9 +135,30 @@ Map natural language to Notion properties:
 - If the user says "Delete the milk task", find the task named "Buy Milk" and use its ID.
 - If ambiguous, pick the most recent one or mention ambiguity in the response.
 
-### 5. Calendar Reminders
-- Set `createCalendarEvent: true` **ONLY** if the user explicitly asks for a reminder/alarm ("avísame", "recuérdame", "pon alarma").
-- Otherwise default to `false`.
+### 5. Calendar Reminders (Google Calendar Integration)
+**CRITICAL: Calendar events require BOTH conditions:**
+1. `createCalendarEvent: true`
+2. `dueDateTime` set with specific time (e.g., "2026-01-15T14:00:00-05:00")
+
+**When to create calendar events:**
+- **Auto-create if:** Task has a specific TIME mentioned ("a las 2pm", "mañana a las 10am", "hoy a las 3")
+  - Set `dueDateTime` with the specific time
+  - Set `createCalendarEvent: true`
+
+- **Auto-create if:** User explicitly asks for reminder ("avísame", "recuérdame", "pon alarma", "notificación")
+  - If no specific time mentioned, default to 9:00 AM on the due date
+  - Set `dueDateTime` with time
+  - Set `createCalendarEvent: true`
+
+- **Don't create if:** Only a date is mentioned with no time ("mañana", "el viernes")
+  - Set only `dueDate`
+  - Set `createCalendarEvent: false`
+  - Leave `dueDateTime: null`
+
+**Examples:**
+- "Recuérdame llamar al doctor mañana" → `dueDateTime: "2026-01-16T09:00:00-05:00"`, `createCalendarEvent: true`
+- "Llamar al banco mañana a las 2pm" → `dueDateTime: "2026-01-16T14:00:00-05:00"`, `createCalendarEvent: true`
+- "Pagar la factura el viernes" → `dueDate: "2026-01-17"`, `dueDateTime: null`, `createCalendarEvent: false`
 
 ---
 
@@ -158,12 +179,42 @@ Map natural language to Notion properties:
 ```json
 {
   "intent": "create",
-  "response": "Listo, creé la tarea de llamar al banco para mañana en el área Personal.",
+  "response": "Listo, creé la tarea de llamar al banco para mañana a las nueve de la mañana con recordatorio en el calendario.",
   "task": {
     "name": "Llamar al banco",
-    "dueDate": "2026-01-07",
+    "dueDate": "2026-01-16",
+    "dueDateTime": "2026-01-16T09:00:00-05:00",
+    "createCalendarEvent": true,
     "areaId": "uuid-for-personal-area",
-    ...
+    "priority": null,
+    "description": "",
+    "urgent": false,
+    "important": false,
+    "projectId": null,
+    "repeatCycle": null,
+    "repeatEvery": null
+  }
+}
+```
+
+**Input:** "Llamar al dentista mañana a las 3 de la tarde"
+```json
+{
+  "intent": "create",
+  "response": "Listo, creé la tarea de llamar al dentista para mañana a las tres de la tarde con recordatorio.",
+  "task": {
+    "name": "Llamar al dentista",
+    "dueDate": "2026-01-16",
+    "dueDateTime": "2026-01-16T15:00:00-05:00",
+    "createCalendarEvent": true,
+    "areaId": "uuid-for-health-area",
+    "priority": null,
+    "description": "",
+    "urgent": false,
+    "important": false,
+    "projectId": null,
+    "repeatCycle": null,
+    "repeatEvery": null
   }
 }
 ```

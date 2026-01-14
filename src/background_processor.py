@@ -203,6 +203,9 @@ class BackgroundProcessor:
                             if event_id:
                                 self.notion.update_task(created_page["id"], {"googleEventId": event_id})
                                 logger.info(f"Synced with Calendar. Event ID: {event_id}")
+                            else:
+                                logger.warning("Calendar event creation failed or timed out")
+                                response_text = f"{response_text} La tarea se creó pero no pude sincronizarla con el calendario."
 
                 elif intent == "edit":
                     task_id = result.get("id")
@@ -231,10 +234,13 @@ class BackgroundProcessor:
                                     calendar_updates["name"] = updates["name"]
 
                                 if calendar_updates:
-                                    self.calendar.update_event(
+                                    success = self.calendar.update_event(
                                         task_to_edit["googleEventId"],
                                         calendar_updates
                                     )
+                                    if not success:
+                                        logger.warning("Calendar event update failed or timed out")
+                                        response_text = f"{response_text} La tarea se actualizó pero no pude sincronizar el cambio con el calendario."
 
                         elif updates.get("done"):
                             task_to_edit = next((t for t in tasks if t["id"] == task_id), None)
@@ -243,6 +249,9 @@ class BackgroundProcessor:
                                 if self.calendar.delete_event(task_to_edit["googleEventId"]):
                                     self.notion.update_task(task_id, {"googleEventId": ""})
                                     logger.info("Event removed.")
+                                else:
+                                    logger.warning("Calendar event deletion failed or timed out")
+                                    response_text = f"{response_text} La tarea se marcó como completada pero no pude eliminar el evento del calendario."
 
                 elif intent == "delete":
                     task_id = result.get("id")

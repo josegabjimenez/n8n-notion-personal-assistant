@@ -32,10 +32,15 @@ class AIClient:
             timeout=float(os.getenv("OPENAI_TIMEOUT", "30"))
         )
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        logger.info(f"AIClient initialized with model: {self.model}")
 
     def call(self, prompt: str, expect_json: bool = True) -> AIResponse:
         """
         Execute AI call with OpenAI API.
+
+        Automatically detects model type and uses appropriate API:
+        - GPT-5 models: Responses API (simpler, newer)
+        - GPT-4 models: Chat Completions API (classic)
 
         Args:
             prompt: Full prompt including system instructions and user query
@@ -47,6 +52,101 @@ class AIClient:
         import time
         start_time = time.time()
 
+        # Detect if using GPT-5 models (use Responses API)
+        is_gpt5 = self.model.startswith("gpt-5")
+
+        if is_gpt5:
+            return self._call_responses_api(prompt, expect_json, start_time)
+        else:
+            return self._call_chat_completions_api(prompt, expect_json, start_time)
+
+    def _call_responses_api(self, prompt: str, expect_json: bool, start_time: float) -> AIResponse:
+        """
+        Call using the new Responses API for GPT-5 models.
+        Simpler API: single input parameter, direct output_text access.
+        """
+        import time
+
+        try:
+            # Combine system and user prompts into single input
+            system_prompt, user_prompt = self._split_prompt(prompt)
+
+            # For Responses API, combine everything into single input
+            if system_prompt:
+                full_input = f"{system_prompt}\n\n{user_prompt}"
+            else:
+                full_input = user_prompt
+
+            prompt_size = len(full_input)
+            logger.info(f"Calling Responses API with model={self.model}, input_size={prompt_size} chars")
+
+            # Build request kwargs for Responses API
+            kwargs = {
+                "model": self.model,
+                "input": full_input,
+            }
+
+            # CRITICAL: Set reasoning effort to 'minimal' for lowest latency
+            # GPT-5 models default to higher reasoning which causes significant delays (10-20s)
+            # For personal assistant use case, we need speed over deep reasoning
+            # Options: 'minimal' (fastest), 'low', 'medium', 'high' (slowest)
+            reasoning_effort = os.getenv("GPT5_REASONING_EFFORT", "minimal")
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+
+            # Note: Responses API does NOT support max_completion_tokens or max_tokens
+            # Token control is handled through the reasoning effort level
+            logger.info(f"Responses API params: reasoning={reasoning_effort}")
+
+            api_start = time.time()
+            response = self.openai_client.responses.create(**kwargs)
+            api_duration = time.time() - api_start
+
+            # Access output from Responses API
+            output = response.output_text
+            if output is None:
+                logger.error(f"Responses API returned None. Full response: {response}")
+                return AIResponse(
+                    success=False,
+                    error="Responses API returned empty response"
+                )
+
+            output = output.strip()
+
+            total_duration = time.time() - start_time
+            logger.info(f"Response received in {total_duration:.2f}s (API call: {api_duration:.2f}s, output: {len(output)} chars)")
+
+            if len(output) == 0:
+                logger.error(f"Responses API returned empty content")
+                return AIResponse(
+                    success=False,
+                    error="Responses API returned empty content"
+                )
+
+            # Extract JSON from markdown if expected
+            if expect_json:
+                output = self._extract_json_from_markdown(output)
+                logger.info(f"Extracted JSON from markdown, final length: {len(output)} chars")
+
+            return AIResponse(
+                success=True,
+                output=output,
+                raw_response=response
+            )
+
+        except Exception as e:
+            logger.error(f"Responses API error: {e}")
+            return AIResponse(
+                success=False,
+                error=str(e)
+            )
+
+    def _call_chat_completions_api(self, prompt: str, expect_json: bool, start_time: float) -> AIResponse:
+        """
+        Call using the classic Chat Completions API for GPT-4 models.
+        Uses messages array and structured response format support.
+        """
+        import time
+
         try:
             # Split prompt into system and user parts
             system_prompt, user_prompt = self._split_prompt(prompt)
@@ -57,25 +157,17 @@ class AIClient:
             messages.append({"role": "user", "content": user_prompt})
 
             prompt_size = len(system_prompt) + len(user_prompt)
-            logger.info(f"Calling OpenAI API with model={self.model}, prompt_size={prompt_size} chars")
-
-            # Debug logging for GPT-5 models (to diagnose empty responses)
-            if self.model.startswith("gpt-5") and os.getenv("DEBUG_GPT5", "false").lower() == "true":
-                logger.debug(f"System prompt preview: {system_prompt[:500]}...")
-                logger.debug(f"User prompt preview: {user_prompt[:500]}...")
+            logger.info(f"Calling Chat Completions API with model={self.model}, prompt_size={prompt_size} chars")
 
             # Build request kwargs
             kwargs = {
                 "model": self.model,
                 "messages": messages,
-                "max_completion_tokens": 1000
+                "max_completion_tokens": 1000,
+                "temperature": 0.3  # Low temperature for consistent responses
             }
 
-            # Add temperature for models that support it (GPT-5 models don't)
-            if not self.model.startswith("gpt-5"):
-                kwargs["temperature"] = 0.3  # Low temperature for consistent responses
-
-            # Add JSON mode if expected (GPT-5-nano doesn't support this)
+            # Add JSON mode if expected and supported
             # Only GPT-4o, GPT-4o-mini, and GPT-4-turbo support structured outputs
             supports_json_mode = any([
                 self.model.startswith("gpt-4o"),
@@ -83,12 +175,8 @@ class AIClient:
                 "gpt-4-1106" in self.model,  # GPT-4 Turbo preview
             ])
 
-            # For GPT-5 models, we'll parse JSON from markdown manually (like old CLI)
             if expect_json and supports_json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
-            elif expect_json and self.model.startswith("gpt-5"):
-                # GPT-5 models: don't force JSON mode, will extract from markdown later
-                logger.info(f"Model {self.model} will return natural response, will extract JSON manually")
 
             api_start = time.time()
             response = self.openai_client.chat.completions.create(**kwargs)
@@ -96,26 +184,25 @@ class AIClient:
 
             output = response.choices[0].message.content
             if output is None:
-                logger.error(f"OpenAI returned None content. Full response: {response}")
+                logger.error(f"Chat Completions API returned None content")
                 return AIResponse(
                     success=False,
-                    error="OpenAI returned empty response"
+                    error="Chat Completions API returned empty response"
                 )
 
             output = output.strip()
 
             total_duration = time.time() - start_time
-            logger.info(f"AI response received in {total_duration:.2f}s (API call: {api_duration:.2f}s, output: {len(output)} chars)")
+            logger.info(f"Response received in {total_duration:.2f}s (API call: {api_duration:.2f}s, output: {len(output)} chars)")
 
             if len(output) == 0:
-                logger.error(f"OpenAI returned empty content after strip. Raw response: {response.choices[0].message}")
+                logger.error(f"Chat Completions API returned empty content")
                 return AIResponse(
                     success=False,
-                    error="OpenAI returned empty content"
+                    error="Chat Completions API returned empty content"
                 )
 
             # For models without native JSON mode, extract JSON from markdown
-            # (GPT-5 models may wrap JSON in markdown code blocks)
             if expect_json and not supports_json_mode:
                 output = self._extract_json_from_markdown(output)
                 logger.info(f"Extracted JSON from markdown, final length: {len(output)} chars")
@@ -127,7 +214,7 @@ class AIClient:
             )
 
         except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error(f"Chat Completions API error: {e}")
             return AIResponse(
                 success=False,
                 error=str(e)
@@ -177,18 +264,34 @@ class AIClient:
     def call_for_classification(self, prompt: str) -> str:
         """
         Specialized call for intent router (expects single word response).
+        Uses fastest model available for minimal latency.
         """
-        response = self.call(prompt, expect_json=False)
+        # For classification, always use the fastest model (gpt-5-nano or gpt-4o-mini)
+        original_model = self.model
 
-        if not response.success:
-            logger.warning(f"Classification failed: {response.error}")
-            return "general"  # Default on error
+        # Override to fastest model for classification
+        if os.getenv("CLASSIFICATION_MODEL"):
+            self.model = os.getenv("CLASSIFICATION_MODEL")
+        elif self.model.startswith("gpt-5"):
+            # If using GPT-5, downgrade to nano for classification
+            self.model = "gpt-5-nano"
+            logger.info(f"Classification: using {self.model} (faster than {original_model})")
 
-        output = response.output.lower().strip()
+        try:
+            response = self.call(prompt, expect_json=False)
 
-        # Extract domain from response
-        for domain in ["tasks", "contacts", "status", "general"]:
-            if domain in output:
-                return domain
+            if not response.success:
+                logger.warning(f"Classification failed: {response.error}")
+                return "general"  # Default on error
 
-        return "general"
+            output = response.output.lower().strip()
+
+            # Extract domain from response
+            for domain in ["tasks", "contacts", "status", "general"]:
+                if domain in output:
+                    return domain
+
+            return "general"
+        finally:
+            # Restore original model
+            self.model = original_model
