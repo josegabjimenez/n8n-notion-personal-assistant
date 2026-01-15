@@ -1,9 +1,12 @@
 import os
 import json
 import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
 from ai_client import AIClient
+
+if TYPE_CHECKING:
+    from conversation_store import ConversationTurn
 
 
 class AIHandler:
@@ -28,8 +31,36 @@ class AIHandler:
         now = datetime.datetime.now(tz)
         today_str = now.strftime("%Y-%m-%d %A")
         time_str = now.strftime("%H:%M:%S")
-        
+
         return f"CURRENT DATE: {today_str}\nCURRENT TIME: {time_str} (Timezone: America/Bogota)\n"
+
+    def _format_conversation_history(self, history: List['ConversationTurn']) -> str:
+        """Format conversation history for prompt injection.
+
+        Optimized for minimal token usage while providing useful context.
+        Only includes last 3 turns with truncated responses.
+        """
+        if not history:
+            return ""
+
+        # Only use last 3 turns to keep prompt size manageable
+        recent_turns = history[-3:]
+
+        history_str = "\n--- CONVERSATION HISTORY ---\n"
+        history_str += "(Previous turns in this session for context)\n"
+
+        for i, turn in enumerate(recent_turns, 1):
+            # Truncate long responses to ~150 chars for efficiency
+            response_preview = turn.response[:150]
+            if len(turn.response) > 150:
+                response_preview += "..."
+
+            history_str += f"\n[Turn {i}]\n"
+            history_str += f"User: {turn.query}\n"
+            history_str += f"Assistant: {response_preview}\n"
+
+        history_str += "\n--- END CONVERSATION HISTORY ---\n"
+        return history_str
 
     def _call_ai(self, full_prompt: str) -> Dict[str, Any]:
         """Execute AI call via AIClient and parse JSON response."""
@@ -49,13 +80,21 @@ class AIHandler:
                 "response": "Lo siento, la respuesta de la IA no fue válida.",
             }
 
-    def handle_tasks(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_tasks(
+        self,
+        query: str,
+        context: Dict[str, Any],
+        history: List['ConversationTurn'] = None
+    ) -> Dict[str, Any]:
         """Handle task-related queries using TASKS_AGENT prompt."""
         system_prompt = self._load_prompt("TASKS_AGENT.md")
-        
+
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
         context_str += self._get_time_context()
-        
+
+        # Add conversation history for multi-turn context
+        context_str += self._format_conversation_history(history or [])
+
         context_str += "\nAVAILABLE AREAS:\n"
         for area in context.get("areas", []):
             context_str += f"- {area['name']} (ID: {area['id']})\n"
@@ -86,13 +125,21 @@ class AIHandler:
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
         return self._call_ai(full_prompt)
 
-    def handle_contacts(self, query: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_contacts(
+        self,
+        query: str,
+        context: Dict[str, Any],
+        history: List['ConversationTurn'] = None
+    ) -> Dict[str, Any]:
         """Handle contact-related queries using CONTACTS_AGENT prompt."""
         system_prompt = self._load_prompt("CONTACTS_AGENT.md")
-        
+
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
         context_str += self._get_time_context()
-        
+
+        # Add conversation history for multi-turn context
+        context_str += self._format_conversation_history(history or [])
+
         context_str += "\nCONTACTS:\n"
         for contact in context.get("contacts", []):
             contact_line = f"- {contact['name']} (ID: {contact['id']})"
@@ -123,12 +170,19 @@ class AIHandler:
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
         return self._call_ai(full_prompt)
 
-    def handle_general(self, query: str) -> Dict[str, Any]:
+    def handle_general(
+        self,
+        query: str,
+        history: List['ConversationTurn'] = None
+    ) -> Dict[str, Any]:
         """Handle general conversation using GENERAL_AGENT prompt."""
         system_prompt = self._load_prompt("GENERAL_AGENT.md")
 
         context_str = f"\n\n--- DYNAMIC CONTEXT ---\n"
         context_str += self._get_time_context()
+
+        # Add conversation history for multi-turn context
+        context_str += self._format_conversation_history(history or [])
 
         full_prompt = f"{system_prompt}\n{context_str}\n\nUSER INPUT: \"{query}\""
         return self._call_ai(full_prompt)

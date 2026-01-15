@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional, Tuple, List
 
 from task_store import TaskStore, TaskStatus
+from conversation_store import ConversationStore, ConversationTurn
 
 logger = logging.getLogger("BackgroundProcessor")
 
@@ -16,18 +17,30 @@ class BackgroundProcessor:
 
     def __init__(self, notion_service, ai_handler, calendar_service,
                  intent_router, task_store: TaskStore,
+                 conversation_store: ConversationStore,
                  areas: list, projects: list):
         self.notion = notion_service
         self.ai = ai_handler
         self.calendar = calendar_service
         self.router = intent_router
         self.store = task_store
+        self.conversations = conversation_store
         self.areas = areas
         self.projects = projects
 
-    def process_with_deadline(self, query: str, deadline: float = 6.0) -> Tuple[Optional[Dict[str, Any]], bool]:
+    def process_with_deadline(
+        self,
+        query: str,
+        deadline: float = 6.0,
+        session_id: Optional[str] = None
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
         """
         Process a query with a deadline.
+
+        Args:
+            query: The user's query
+            deadline: Max seconds to wait before returning
+            session_id: Optional session ID for conversation memory
 
         Returns:
             (result, completed_in_time): Tuple with the result dict and whether it completed before deadline
@@ -39,7 +52,7 @@ class BackgroundProcessor:
         # Start background thread
         thread = threading.Thread(
             target=self._process_full,
-            args=(task_id, query, result_holder, completion_event),
+            args=(task_id, query, result_holder, completion_event, session_id),
             daemon=True
         )
         thread.start()
@@ -53,19 +66,28 @@ class BackgroundProcessor:
             # Background continues running
             return None, False
 
-    def _process_full(self, task_id: str, query: str,
-                      result_holder: Dict, completion_event: threading.Event):
+    def _process_full(
+        self,
+        task_id: str,
+        query: str,
+        result_holder: Dict,
+        completion_event: threading.Event,
+        session_id: Optional[str] = None
+    ):
         """Full processing logic (runs in background thread)."""
         self.store.update_task(task_id, TaskStatus.PROCESSING)
+
+        # Get conversation history for context (fast, in-memory lookup)
+        history = self.conversations.get_conversation_history(session_id) if session_id else []
 
         try:
             # Step 1: Route the query (fast keyword match or AI-based)
             domain = self.router.classify(query)
             logger.info(f"[{task_id}] Domain: {domain}")
 
-            # Step 2: Fetch context and process
+            # Step 2: Fetch context and process with conversation history
             # Returns (ai_result, tasks_list) - tasks_list is reused to avoid redundant fetch
-            result, tasks = self._handle_domain(query, domain)
+            result, tasks = self._handle_domain(query, domain, history)
             logger.info(f"[{task_id}] AI result: intent={result.get('intent')}")
 
             # Step 3: Execute actions (pass tasks to avoid redundant fetch)
@@ -77,6 +99,11 @@ class BackgroundProcessor:
                 TaskStatus.COMPLETED,
                 result=response_text
             )
+
+            # Step 5: Store conversation turn (for future context)
+            # Only store successful responses, not status queries
+            if session_id and domain != "status":
+                self.conversations.add_turn(session_id, query, response_text, domain)
 
             # Update result holder for deadline wait
             result_holder["result"] = result
@@ -128,11 +155,24 @@ class BackgroundProcessor:
             contact["pageContent"] = ""
         return contact
 
-    def _handle_domain(self, query: str, domain: str) -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
+    def _handle_domain(
+        self,
+        query: str,
+        domain: str,
+        history: List[ConversationTurn] = None
+    ) -> Tuple[Dict[str, Any], Optional[List[Dict]]]:
         """
         Handle domain-specific processing.
+
+        Args:
+            query: The user's query
+            domain: The classified domain (tasks, contacts, general)
+            history: Conversation history for context
+
         Returns: (ai_result, tasks_list) - tasks_list is returned for reuse in _execute_actions
         """
+        history = history or []
+
         if domain == "tasks":
             tasks = self.notion.get_active_tasks()
             context = {
@@ -140,7 +180,7 @@ class BackgroundProcessor:
                 "projects": self.projects,
                 "tasks": tasks
             }
-            return self.ai.handle_tasks(query, context), tasks
+            return self.ai.handle_tasks(query, context, history), tasks
 
         elif domain == "contacts":
             contacts = self.notion.get_contacts()
@@ -166,10 +206,10 @@ class BackgroundProcessor:
                         pass
 
             context = {"contacts": contacts}
-            return self.ai.handle_contacts(query, context), None
+            return self.ai.handle_contacts(query, context, history), None
 
         else:  # general
-            return self.ai.handle_general(query), None
+            return self.ai.handle_general(query, history), None
 
     def _execute_actions(self, domain: str, result: Dict[str, Any],
                          tasks: Optional[List[Dict]] = None) -> str:

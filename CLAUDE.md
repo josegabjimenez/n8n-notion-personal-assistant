@@ -81,6 +81,51 @@ The "status" domain handles queries about pending/completed tasks:
 
 ---
 
+## Session-Based Conversation Memory
+
+### Purpose
+Enables multi-turn conversations within an Alexa skill session. The agent remembers previous interactions and can resolve ambiguous references like "esa tarea", "ponla para mañana", etc.
+
+### How It Works
+1. n8n forwards Alexa's `session_id` in the request body
+2. `ConversationStore` maintains conversation history per session
+3. Last 3-5 turns are injected into AI prompts as context
+4. Sessions auto-expire after 2 minutes of inactivity
+
+### Request Format
+```json
+{
+  "query": "Ponla para mañana",
+  "session_id": "alexa-session-uuid",
+  "timeout": 6.0
+}
+```
+
+### Key Files
+- `src/conversation_store.py` - Thread-safe session memory store
+- Prompts updated with "Conversation History" section
+
+### Configuration
+```
+CONVERSATION_MAX_TURNS=5      # Max turns per session (default: 5)
+CONVERSATION_TTL_SECONDS=120  # Session TTL in seconds (default: 120)
+```
+
+### Example Flow
+```
+Turn 1: "¿Cuántas tareas tengo para hoy?"
+→ "Tienes tres tareas. La primera es comprar leche..."
+
+Turn 2: "Marca la primera como completada"
+→ AI uses history to identify "la primera" = comprar leche
+→ "Listo, marqué la tarea de comprar leche como completada."
+```
+
+### n8n Configuration
+Forward `sessionId` from Alexa request to `/query` endpoint as `session_id`.
+
+---
+
 ## Adding New Domains
 
 To add a new domain (e.g., "notes", "calendar", "spotify"):
@@ -124,13 +169,15 @@ DEADLINE_SECONDS=6.0  # Optional: deadline for Alexa responses (default: 6.0)
 ```
 notion-personal-agent/
 ├── src/
-│   ├── server.py              # Main socket server (deadline-based flow)
+│   ├── http_server.py         # Main HTTP server (FastAPI, primary integration)
+│   ├── server.py              # Legacy socket server
 │   ├── client.py              # CLI client
 │   ├── intent_router.py       # Query domain classifier
 │   ├── ai_handler.py          # AI handlers per domain
 │   ├── notion_service.py      # Notion API wrapper
 │   ├── calendar_service.py    # Google Calendar integration
 │   ├── task_store.py          # Thread-safe background task store
+│   ├── conversation_store.py  # Thread-safe session memory store
 │   └── background_processor.py # Deadline-based async processing
 ├── prompts/
 │   ├── ROUTER.md              # Intent classification

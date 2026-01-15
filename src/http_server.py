@@ -31,6 +31,7 @@ ai_handler = None
 intent_router = None
 calendar_service = None
 task_store = None
+conversation_store = None
 bg_processor = None
 
 
@@ -38,6 +39,7 @@ class QueryRequest(BaseModel):
     """Request model for query endpoint."""
     query: str
     timeout: float = 6.0
+    session_id: Optional[str] = None  # For conversation memory within Alexa sessions
 
 
 class QueryResponse(BaseModel):
@@ -58,13 +60,14 @@ def is_status_query(query: str) -> bool:
 async def lifespan(app: FastAPI):
     """Initialize services on startup, cleanup on shutdown."""
     global notion_service, ai_handler, intent_router, calendar_service
-    global task_store, bg_processor
+    global task_store, conversation_store, bg_processor
 
     from notion_service import NotionService
     from ai_handler import AIHandler
     from intent_router import IntentRouter
     from calendar_service import CalendarService
     from task_store import TaskStore
+    from conversation_store import ConversationStore
     from background_processor import BackgroundProcessor
     from ai_client import AIClient
 
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
     intent_router = IntentRouter(ai_client=ai_client)
     calendar_service = CalendarService()
     task_store = TaskStore()
+    conversation_store = ConversationStore()  # Session memory for multi-turn conversations
 
     # Cache static context at startup
     logger.info("Loading areas and projects...")
@@ -87,7 +91,7 @@ async def lifespan(app: FastAPI):
 
     bg_processor = BackgroundProcessor(
         notion_service, ai_handler, calendar_service,
-        intent_router, task_store, areas, projects
+        intent_router, task_store, conversation_store, areas, projects
     )
 
     logger.info("Services initialized successfully")
@@ -131,14 +135,13 @@ async def handle_query(request: QueryRequest):
 
     # Deadline-based processing using thread pool
     loop = asyncio.get_event_loop()
+    session_id = request.session_id
 
     try:
         result, completed = await asyncio.wait_for(
             loop.run_in_executor(
                 executor,
-                bg_processor.process_with_deadline,
-                query,
-                deadline
+                lambda: bg_processor.process_with_deadline(query, deadline, session_id)
             ),
             timeout=deadline + 0.5  # Small buffer for executor overhead
         )
