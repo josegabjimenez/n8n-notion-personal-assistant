@@ -28,18 +28,34 @@ class CalendarService:
     def _authenticate(self):
         """Authenticates with Google Calendar API."""
         if os.path.exists(self.token_path):
-            with open(self.token_path, 'rb') as token:
-                self.creds = pickle.load(token)
-        
+            try:
+                with open(self.token_path, 'rb') as token:
+                    self.creds = pickle.load(token)
+            except Exception as e:
+                logger.warning(f"Could not load token from {self.token_path}: {e}")
+                self.creds = None
+
         # If there are no (valid) credentials available, let the user log in.
         if not self.creds or not self.creds.valid:
             if self.creds and self.creds.expired and self.creds.refresh_token:
-                self.creds.refresh(Request())
-            else:
+                try:
+                    self.creds.refresh(Request())
+                    logger.info("Token refreshed successfully")
+                except Exception as e:
+                    # Token expired/revoked (invalid_grant) or other refresh error — re-auth required
+                    logger.warning(f"Token refresh failed ({e}); re-authenticating via browser...")
+                    if os.path.exists(self.token_path):
+                        try:
+                            os.remove(self.token_path)
+                        except OSError:
+                            pass
+                    self.creds = None
+
+            if not self.creds or not self.creds.valid:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     self.credentials_path, SCOPES)
                 self.creds = flow.run_local_server(port=0)
-            
+
             # Save the credentials for the next run
             with open(self.token_path, 'wb') as token:
                 pickle.dump(self.creds, token)
@@ -85,6 +101,13 @@ class CalendarService:
                     return False
                 except Exception as e:
                     logger.error(f"Token refresh failed: {e}")
+                    # Remove stale token so next startup triggers re-auth (browser flow)
+                    if os.path.exists(self.token_path):
+                        try:
+                            os.remove(self.token_path)
+                            logger.info("Removed stale token; restart the app to re-authenticate.")
+                        except OSError:
+                            pass
                     return False
                 finally:
                     socket.setdefaulttimeout(old_timeout)

@@ -1,0 +1,336 @@
+{
+  "name": "ALEXA - Agente",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alexa-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -256,
+        0
+      ],
+      "id": "ad072842-d46f-45fc-8753-c45c41c8d83b",
+      "name": "Webhook",
+      "webhookId": "a0ab6dc8-a1d2-41f0-ae11-0809a272c324"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      version: \"1.0\",\n      response: {\n        outputSpeech: {\n          type: \"PlainText\",\n          text: \"Modo Jarvis Activado\"\n        },\n        shouldEndSession: false\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        -192
+      ],
+      "id": "83dff79d-1345-4f36-9785-af734b50cac9",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        864,
+        96
+      ],
+      "id": "359d2e71-afac-4e56-ae55-ed59a5ad74bb",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "583b935c-970d-4f7c-bd4e-17f2bf17f5ab",
+              "leftValue": "={{ $json.body.request.type }}",
+              "rightValue": "=LaunchRequest",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -32,
+        0
+      ],
+      "id": "f1f520f6-fec9-4ec9-886c-bea1f3c9cb04",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "command": "=.venv/bin/python src/client.py \"{{ $json.body.request.intent.slots.comando.slotValue.value }}\"",
+        "cwd": "~/agents/n8n-notion-personal-assistant/"
+      },
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        416,
+        384
+      ],
+      "id": "47594c97-d9cd-4d85-b051-04c9110eaace",
+      "name": "Execute a command",
+      "credentials": {
+        "sshPassword": {
+          "id": "i9K6w1ltzJYkOVTa",
+          "name": "SSH Password account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      version: \"1.0\",\n      response: {\n        outputSpeech: {\n          type: \"PlainText\",\n          text: $input.first().json.stdout\n        },\n        shouldEndSession: false\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        384
+      ],
+      "id": "46e171c7-26a7-4a94-a743-a6eab6664799",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "55fa6353-5193-43b5-a217-b8c0efcf8d0f",
+              "leftValue": "={{ $json.body.request.intent.slots.comando.value }}",
+              "rightValue": "=[undefined]",
+              "operator": {
+                "type": "string",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        192,
+        96
+      ],
+      "id": "90b3065e-90cb-4531-9d7c-60acbb639fc2",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      version: \"1.0\",\n      response: {\n        outputSpeech: {\n          type: \"PlainText\",\n          text: \"comando inválido\"\n        },\n        shouldEndSession: false\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        0
+      ],
+      "id": "d0be05c1-0456-4620-ac04-4aee8d6aa837",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://josegabjimenez.cloud:9091/query",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.body.request.intent.slots.comando.slotValue.value }}"
+            },
+            {
+              "name": "timeout",
+              "value": "8.0"
+            },
+            {
+              "name": "session_id",
+              "value": "={{ $('Webhook').item.json.body.session.sessionId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        416,
+        192
+      ],
+      "id": "d2f154ec-a25a-4bfd-8301-a805e637a58b",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      version: \"1.0\",\n      response: {\n        outputSpeech: {\n          type: \"PlainText\",\n          text: $input.first().json.response\n        },\n        shouldEndSession: false\n      }\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        192
+      ],
+      "id": "7d4fc4e4-1fd0-4e01-89bb-d6bcf1c1a6be",
+      "name": "Code in JavaScript3"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a command": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "df6cd7d3-5f3e-4875-aaec-2d61ad5eb5bf",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8272aa95d4c85d9a339951bc5e7b4e969a33e5e33c3de98b32ec4ed06328018a"
+  },
+  "id": "W1qmOvABkGsIeD99",
+  "tags": []
+}
